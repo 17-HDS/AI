@@ -9,7 +9,7 @@ from typing import List, Dict, Any
 import chromadb
 from chromadb.config import Settings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_openai import OpenAIEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
 import tiktoken
 from dotenv import load_dotenv
 
@@ -19,11 +19,14 @@ load_dotenv()
 class VectorStore:
     def __init__(self, collection_name: str = "insurance_terms"):
         self.collection_name = collection_name
-        # API 키를 명시적으로 전달
-        api_key = os.getenv('OPENAI_API_KEY')
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY 환경변수가 설정되지 않았습니다.")
-        self.embeddings = OpenAIEmbeddings(model="text-embedding-ada-002", openai_api_key=api_key)
+        # BGE-M3 임베딩 모델 초기화
+        print("🤖 BGE-M3 임베딩 모델 로딩 중...")
+        self.embeddings = HuggingFaceEmbeddings(
+            model_name="BAAI/bge-m3",
+            model_kwargs={'device': 'cpu'},  # GPU 사용 시 'cuda'로 변경 가능
+            encode_kwargs={'normalize_embeddings': True}  # 코사인 유사도 최적화
+        )
+        print("✅ BGE-M3 모델 로딩 완료")
         
         # ChromaDB 클라이언트 초기화
         self.client = chromadb.PersistentClient(
@@ -31,13 +34,39 @@ class VectorStore:
             settings=Settings(anonymized_telemetry=False)
         )
         
+        # 임베딩 함수 정의 (ChromaDB 최신 버전 호환)
+        # ChromaDB 0.4.16+ 버전에서는 input 파라미터를 사용해야 함
+        class BGEEmbeddingFunction:
+            def __init__(self, embeddings_model):
+                self.embeddings_model = embeddings_model
+            
+            def name(self):
+                """ChromaDB가 요구하는 name 메서드"""
+                return "bge-m3"
+            
+            def __call__(self, input):
+                """텍스트 리스트를 임베딩 벡터로 변환 (ChromaDB용)"""
+                if isinstance(input, str):
+                    input = [input]
+                return self.embeddings_model.embed_documents(input)
+        
+        embedding_function = BGEEmbeddingFunction(self.embeddings)
+        self.embedding_function = embedding_function
+        
         # 컬렉션 생성 또는 가져오기
         try:
-            self.collection = self.client.get_collection(name=collection_name)
+            # 기존 컬렉션을 로드할 때도 embedding_function 필요
+            self.collection = self.client.get_collection(
+                name=collection_name,
+                embedding_function=embedding_function
+            )
             print(f"📚 기존 컬렉션 로드: {collection_name}")
+            print("⚠️ 기존 컬렉션 발견. 임베딩 모델이 변경되었다면 벡터 DB를 재구축하세요.")
         except:
+            # 컬렉션이 없으면 새로 생성
             self.collection = self.client.create_collection(
                 name=collection_name,
+                embedding_function=embedding_function,
                 metadata={"description": "보험 약관 문서 벡터 저장소"}
             )
             print(f"📚 새 컬렉션 생성: {collection_name}")
@@ -109,16 +138,22 @@ class VectorStore:
         print("💾 벡터 DB에 저장 중...")
         
         try:
-            # 기존 데이터 삭제 (새로 시작)
+            # 기존 데이터가 있으면 모두 삭제 (컬렉션은 유지)
             try:
-                self.client.delete_collection(self.collection_name)
-                self.collection = self.client.create_collection(
-                    name=self.collection_name,
-                    metadata={"description": "보험 약관 문서 벡터 저장소"}
-                )
-                print("🗑️ 기존 데이터 삭제 완료")
-            except:
-                pass
+                # 현재 컬렉션의 모든 데이터 가져오기
+                existing_data = self.collection.get()
+                if existing_data and existing_data.get('ids'):
+                    all_ids = existing_data['ids']
+                    if all_ids:
+                        self.collection.delete(ids=all_ids)
+                        print(f"🗑️ 기존 {len(all_ids)}개 문서 삭제 완료")
+                    else:
+                        print("📝 기존 데이터가 없습니다.")
+                else:
+                    print("📝 기존 데이터가 없습니다.")
+            except Exception as e:
+                # 데이터가 없거나 가져오기 실패 시 무시하고 계속 진행
+                print(f"📝 기존 데이터 확인 중 오류 (계속 진행): {str(e)}")
             
             # 청크들을 배치로 저장
             batch_size = 100
@@ -130,7 +165,7 @@ class VectorStore:
                 metadatas = [chunk["metadata"] for chunk in batch]
                 ids = [f"chunk_{i}_{j}" for j in range(len(batch))]
                 
-                # 벡터 DB에 추가
+                # 벡터 DB에 추가 (ChromaDB가 embedding_function을 자동으로 사용)
                 self.collection.add(
                     documents=documents,
                     metadatas=metadatas,

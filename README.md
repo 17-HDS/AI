@@ -2,6 +2,8 @@
 
 보험 약관 PDF 파일을 벡터 데이터베이스에 저장하고, GPT API를 이용하여 실제 약관에 기반한 질문-응답이 가능한 AI 챗봇 시스템입니다.
 
+> 💡 **임베딩 모델**: BGE-M3 (BAAI/bge-m3) - 오픈소스 임베딩 모델로 API 비용 없이 사용 가능합니다.
+
 ## 🏗️ 시스템 아키텍처
 
 ```
@@ -14,7 +16,7 @@
 │
 ├── Step 2: 벡터 저장소 (vector_store.py)
 │   ├── LangChain: 텍스트 청킹 (300토큰, 100오버랩)
-│   ├── OpenAI: 임베딩 (text-embedding-ada-002)
+│   ├── BGE-M3: 임베딩 (BAAI/bge-m3) - 오픈소스, API 비용 없음
 │   └── ChromaDB: 벡터 저장
 │
 ├── Step 3: RAG 챗봇 (rag_chatbot.py)
@@ -35,10 +37,14 @@
 pip install -r requirements.txt
 ```
 
+> ⚠️ **첫 설치 시**: 
+> - `sentence-transformers`와 `torch` 패키지가 설치됩니다 (약간의 시간 소요)
+> - 첫 실행 시 BGE-M3 모델이 자동으로 다운로드됩니다 (약 2.2GB, 인터넷 연결 필요)
+
 ### 2. 환경 설정
 `.env` 파일 생성:
 ```env
-# OpenAI API 키 (필수)
+# OpenAI API 키 (필수 - GPT 답변 생성용)
 OPENAI_API_KEY=sk-your-api-key-here
 
 # 사용할 GPT 모델 (선택사항, 기본값: gpt-4o-mini)
@@ -50,9 +56,10 @@ OPENAI_API_KEY=sk-your-api-key-here
 GPT_MODEL=gpt-4o-mini
 ```
 
-> ⚠️ **Rate Limit 오류 해결**: 
-> `rate_limit_exceeded` 오류가 발생하면 GPT_MODEL을 `gpt-4o-mini`로 변경하세요. 
-> 이 모델은 더 높은 토큰 제한과 저렴한 비용을 제공합니다.
+> 💡 **참고**: 
+> - 임베딩 모델(BGE-M3)은 오픈소스이므로 **API 키가 필요 없습니다**
+> - GPT 답변 생성에는 여전히 OpenAI API 키가 필요합니다
+> - `rate_limit_exceeded` 오류가 발생하면 GPT_MODEL을 `gpt-4o-mini`로 변경하세요
 
 ### 3. PDF 파일 준비
 `source/` 폴더에 `약관.pdf` 파일을 넣으세요.
@@ -63,10 +70,16 @@ GPT_MODEL=gpt-4o-mini
 python pdf_preprocessor.py
 
 # 2단계: 벡터 저장소 구축
+# ⚠️ 첫 실행 시: BGE-M3 모델 다운로드 (약 2.2GB, 시간 소요)
 python vector_store.py
 
 # 3단계: 웹 인터페이스 실행
 streamlit run streamlit_app.py
+```
+
+> ⚠️ **중요**: 
+> - 기존 `chroma_db` 폴더가 있다면 삭제하거나 새로운 컬렉션 이름을 사용하세요
+> - 임베딩 모델이 변경되었으므로 벡터 DB를 재구축해야 합니다
 
 ## 📁 프로젝트 구조
 
@@ -109,6 +122,7 @@ python rag_chatbot.py
 
 - **완전한 PDF 처리**: 텍스트 + 표 통합 추출 (JSON, TXT, XLSX 3중 저장)
 - **스마트 청킹**: 300토큰 단위로 의미 단위 분할 (100토큰 오버랩)
+- **오픈소스 임베딩**: BGE-M3 모델 사용 (API 비용 없음, 한국어 지원 우수)
 - **하이브리드 검색**: 벡터 유사도 + 키워드 매칭 결합
 - **출처 명시**: 모든 답변에 페이지 번호 포함
 - **웹 인터페이스**: 사용자 친화적 UI
@@ -127,7 +141,7 @@ python rag_chatbot.py
 
 - **PDF 처리**: PyMuPDF, pdfplumber
 - **텍스트 처리**: LangChain, tiktoken
-- **임베딩**: OpenAI text-embedding-ada-002
+- **임베딩**: BGE-M3 (BAAI/bge-m3) - 오픈소스, API 비용 없음
 - **벡터 DB**: ChromaDB
 - **LLM**: GPT-4o-mini (기본값) / GPT-4 Turbo / GPT-3.5-turbo
 - **웹 UI**: Streamlit
@@ -136,16 +150,21 @@ python rag_chatbot.py
 
 본 시스템은 다음과 같은 방법으로 비용을 최적화합니다:
 
-1. **토큰 제한**: 
+1. **오픈소스 임베딩**:
+   - BGE-M3 모델 사용으로 **임베딩 API 비용 0원** ✨
+   - 로컬에서 실행되므로 API 호출 제한 없음
+   - 한국어 지원이 우수하여 검색 정확도 향상
+
+2. **토큰 제한**: 
    - 컨텍스트 최대 6,000 토큰으로 제한
    - 검색 결과 수를 3개로 제한
    - 프롬프트 템플릿 간소화
 
-2. **경제적 모델 사용**:
+3. **경제적 모델 사용**:
    - 기본 모델: `gpt-4o-mini` (가장 저렴하고 빠름)
    - 필요시 `.env`에서 GPT_MODEL 변경 가능
 
-3. **스마트 청킹**:
+4. **스마트 청킹**:
    - 300토큰 단위로 분할하여 효율적인 검색
 
 ## 🔍 문제 해결
@@ -171,6 +190,19 @@ python rag_chatbot.py
 ### 벡터 저장소 오류
 - `python vector_store.py`를 먼저 실행하여 데이터를 구축
 - `processed_data/약관_pages.json` 파일이 있는지 확인
+- 기존 `chroma_db` 폴더가 있다면 삭제 후 재구축 (임베딩 모델 변경 시 필수)
+
+### BGE-M3 모델 다운로드 오류
+- 첫 실행 시 모델 다운로드가 실패하면:
+  1. 인터넷 연결 확인
+  2. Hugging Face 접근 가능 여부 확인
+  3. 디스크 공간 확인 (약 2.2GB 필요)
+  4. 수동 다운로드: `python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-m3')"`
+
+### 모델 로딩이 느림
+- 첫 실행 시 모델 다운로드 및 로딩에 시간이 걸립니다 (1-2분)
+- 이후 실행 시에는 캐시된 모델을 사용하여 더 빠릅니다
+- GPU가 있다면 `vector_store.py`와 `rag_chatbot.py`에서 `device='cuda'`로 변경 가능
 
 ### PDF 파일 오류
 - `source/` 폴더에 `약관.pdf` 파일이 있는지 확인

@@ -9,6 +9,7 @@ from typing import List, Dict, Any
 import chromadb
 from chromadb.config import Settings
 from langchain_openai import ChatOpenAI
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from dotenv import load_dotenv
 import re
 import tiktoken
@@ -17,14 +18,44 @@ load_dotenv()
 
 class RAGChatbot:
     def __init__(self):
+        # BGE-M3 임베딩 모델 초기화 (검색 시 사용)
+        print("🤖 BGE-M3 임베딩 모델 로딩 중...")
+        self.embeddings = HuggingFaceEmbeddings(
+            model_name="BAAI/bge-m3",
+            model_kwargs={'device': 'cpu'},  # GPU 사용 시 'cuda'로 변경 가능
+            encode_kwargs={'normalize_embeddings': True}  # 코사인 유사도 최적화
+        )
+        print("✅ BGE-M3 모델 로딩 완료")
+        
         # ChromaDB 클라이언트 초기화
         self.client = chromadb.PersistentClient(
             path="./chroma_db",
             settings=Settings(anonymized_telemetry=False)
         )
         
-        # 컬렉션 로드
-        self.collection = self.client.get_collection("insurance_terms")
+        # 임베딩 함수 정의 (ChromaDB 최신 버전 호환)
+        # ChromaDB 0.4.16+ 버전에서는 input 파라미터를 사용해야 함
+        class BGEEmbeddingFunction:
+            def __init__(self, embeddings_model):
+                self.embeddings_model = embeddings_model
+            
+            def name(self):
+                """ChromaDB가 요구하는 name 메서드"""
+                return "bge-m3"
+            
+            def __call__(self, input):
+                """텍스트 리스트를 임베딩 벡터로 변환 (ChromaDB용)"""
+                if isinstance(input, str):
+                    input = [input]
+                return self.embeddings_model.embed_documents(input)
+        
+        embedding_function = BGEEmbeddingFunction(self.embeddings)
+        
+        # 컬렉션 로드 (기존 컬렉션에도 embedding_function 필요)
+        self.collection = self.client.get_collection(
+            name="insurance_terms",
+            embedding_function=embedding_function
+        )
         
         # LLM 초기화
         api_key = os.getenv('OPENAI_API_KEY')
