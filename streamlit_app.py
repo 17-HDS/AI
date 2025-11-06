@@ -47,6 +47,66 @@ def main():
         layout="wide"
     )
     
+    # CSS 스타일 추가 (GPT 스타일 채팅 UI)
+    st.markdown("""
+    <style>
+    /* 채팅 영역 고정 높이 및 스크롤 */
+    .chat-container {
+        height: calc(100vh - 250px);
+        overflow-y: auto;
+        overflow-x: hidden;
+        padding: 1rem;
+        display: flex;
+        flex-direction: column;
+    }
+    
+    /* 채팅 메시지 스타일 */
+    .stChatMessage {
+        margin-bottom: 1rem;
+    }
+    
+    /* 입력창 하단 고정 */
+    .stChatFloatingInputContainer {
+        position: sticky;
+        bottom: 0;
+        z-index: 999;
+        background-color: var(--background-color);
+        padding: 1rem 0;
+    }
+    
+    /* 메인 레이아웃 조정 */
+    .main .block-container {
+        padding-top: 1rem;
+        padding-bottom: 1rem;
+    }
+    
+    /* 헤더 고정 */
+    .stApp > header {
+        position: fixed;
+        top: 0;
+        z-index: 1000;
+    }
+    
+    /* 스크롤바 스타일 */
+    .chat-container::-webkit-scrollbar {
+        width: 8px;
+    }
+    
+    .chat-container::-webkit-scrollbar-track {
+        background: #f1f1f1;
+    }
+    
+    .chat-container::-webkit-scrollbar-thumb {
+        background: #888;
+        border-radius: 4px;
+    }
+    
+    .chat-container::-webkit-scrollbar-thumb:hover {
+        background: #555;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
     # 세션 상태 초기화
     initialize_session_state()
     
@@ -103,71 +163,79 @@ def main():
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        st.header("💬 채팅")
+        if not st.session_state.initialized:
+            st.info("👆 먼저 사이드바에서 챗봇을 초기화하세요.")
         
-        # 채팅 히스토리 표시
-        for i, chat in enumerate(st.session_state.chat_history):
-            with st.chat_message("user"):
-                st.write(chat["query"])
-            
-            with st.chat_message("assistant"):
-                st.write(chat["answer"])
-                
-                # 출처 정보
-                if chat["sources"]:
-                    with st.expander(f"📚 참고 문서 ({len(chat['sources'])}개)"):
-                        for j, source in enumerate(chat["sources"], 1):
-                            st.write(f"**문서 {j}** (페이지 {source['page']})")
-                            st.write(source["content"])
-                            st.write("---")
+        # 채팅 영역 (고정 높이, 스크롤 가능)
+        chat_area = st.container(height=600)
         
-        # 사용자 입력
+        with chat_area:
+            # 채팅 히스토리 표시 (위에서 아래로)
+            if st.session_state.chat_history:
+                for chat in st.session_state.chat_history:
+                    with st.chat_message("user"):
+                        st.write(chat["query"])
+                    
+                    with st.chat_message("assistant"):
+                        st.write(chat["answer"])
+                        
+                        # 출처 정보
+                        if chat["sources"]:
+                            with st.expander(f"📚 참고 문서 ({len(chat['sources'])}개)"):
+                                for j, source in enumerate(chat["sources"], 1):
+                                    st.write(f"**문서 {j}** (페이지 {source['page']})")
+                                    st.write(source["content"])
+                                    st.write("---")
+        
+        # 사용자 입력 (하단 고정 - Streamlit의 chat_input이 자동으로 하단에 배치됨)
         if st.session_state.initialized:
-            user_input = st.chat_input("보험 약관에 대해 질문하세요...")
+            user_input = st.chat_input("보험 약관에 대해 질문하세요...", key="chat_input")
             
             if user_input:
-                # 사용자 메시지 표시
-                with st.chat_message("user"):
-                    st.write(user_input)
+                # 사용자 메시지 즉시 표시
+                with chat_area:
+                    with st.chat_message("user"):
+                        st.write(user_input)
                 
                 # AI 답변 생성 (스트리밍)
-                with st.chat_message("assistant"):
-                    # 스트리밍 응답을 위한 컨테이너
-                    message_placeholder = st.empty()
-                    sources_placeholder = st.empty()
-                    
-                    # 초기 로딩 메시지
-                    message_placeholder.markdown("🤔 답변을 생성하는 중...")
-                    
-                    # 스트리밍 응답 생성
-                    full_answer = ""
-                    final_sources = []
-                    streaming_started = False
-                    
-                    for chunk in st.session_state.chatbot.chat_streaming(user_input):
-                        if not chunk["done"]:
-                            # 스트리밍 시작
-                            if not streaming_started:
-                                streaming_started = True
-                                message_placeholder.empty()  # 로딩 메시지 제거
-                            
-                            # 실시간으로 답변 업데이트 (타이핑 효과)
-                            full_answer = chunk["answer"]
-                            message_placeholder.markdown(full_answer + "▌")
-                            time.sleep(0.01)  # 부드러운 스트리밍을 위한 짧은 지연
-                        else:
-                            # 최종 완성된 응답
-                            full_answer = chunk["answer"]
-                            final_sources = chunk["sources"]
-                            message_placeholder.markdown(full_answer)
-                    
-                    # 출처 정보 표시
-                    if final_sources:
-                        with sources_placeholder.expander(f"📚 참고 문서 ({len(final_sources)}개)"):
-                            for i, source in enumerate(final_sources, 1):
-                                st.write(f"**문서 {i}** (페이지 {source['page']})")
-                                st.write(source["content"])
-                                st.write("---")
+                with chat_area:
+                    with st.chat_message("assistant"):
+                        # 스트리밍 응답을 위한 컨테이너
+                        message_placeholder = st.empty()
+                        sources_placeholder = st.empty()
+                        
+                        # 초기 로딩 메시지
+                        message_placeholder.markdown("🤔 답변을 생성하는 중...")
+                        
+                        # 스트리밍 응답 생성
+                        full_answer = ""
+                        final_sources = []
+                        streaming_started = False
+                        
+                        for chunk in st.session_state.chatbot.chat_streaming(user_input):
+                            if not chunk["done"]:
+                                # 스트리밍 시작
+                                if not streaming_started:
+                                    streaming_started = True
+                                    message_placeholder.empty()  # 로딩 메시지 제거
+                                
+                                # 실시간으로 답변 업데이트 (타이핑 효과)
+                                full_answer = chunk["answer"]
+                                message_placeholder.markdown(full_answer + "▌")
+                                time.sleep(0.01)  # 부드러운 스트리밍을 위한 짧은 지연
+                            else:
+                                # 최종 완성된 응답
+                                full_answer = chunk["answer"]
+                                final_sources = chunk["sources"]
+                                message_placeholder.markdown(full_answer)
+                        
+                        # 출처 정보 표시
+                        if final_sources:
+                            with sources_placeholder.expander(f"📚 참고 문서 ({len(final_sources)}개)"):
+                                for i, source in enumerate(final_sources, 1):
+                                    st.write(f"**문서 {i}** (페이지 {source['page']})")
+                                    st.write(source["content"])
+                                    st.write("---")
                 
                 # 채팅 히스토리에 추가
                 st.session_state.chat_history.append({
@@ -175,8 +243,9 @@ def main():
                     "answer": full_answer,
                     "sources": final_sources
                 })
-        else:
-            st.info("👆 먼저 사이드바에서 챗봇을 초기화하세요.")
+                
+                # 페이지 새로고침하여 새 메시지 표시
+                st.rerun()
     
     with col2:
         st.header("📊 시스템 정보")
