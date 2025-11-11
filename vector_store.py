@@ -8,8 +8,8 @@ import os
 from typing import List, Dict, Any
 import chromadb
 from chromadb.config import Settings
+from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_openai import OpenAIEmbeddings
 import tiktoken
 from dotenv import load_dotenv
 
@@ -19,11 +19,13 @@ load_dotenv()
 class VectorStore:
     def __init__(self, collection_name: str = "insurance_terms"):
         self.collection_name = collection_name
-        # API 키를 명시적으로 전달
-        api_key = os.getenv('OPENAI_API_KEY')
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY 환경변수가 설정되지 않았습니다.")
-        self.embeddings = OpenAIEmbeddings(model="text-embedding-ada-002", openai_api_key=api_key)
+        
+        # BGE-M3 임베딩 함수 초기화
+        # BGE-M3는 멀티 언어 지원 및 높은 성능의 오픈소스 임베딩 모델
+        self.embedding_function = SentenceTransformerEmbeddingFunction(
+            model_name="BAAI/bge-m3"
+        )
+        print("BGE-M3 임베딩 모델 로드 완료")
         
         # ChromaDB 클라이언트 초기화
         self.client = chromadb.PersistentClient(
@@ -31,30 +33,34 @@ class VectorStore:
             settings=Settings(anonymized_telemetry=False)
         )
         
-        # 컬렉션 생성 또는 가져오기
+        # 기존 컬렉션 삭제 후 새로 생성
         try:
-            self.collection = self.client.get_collection(name=collection_name)
-            print(f"📚 기존 컬렉션 로드: {collection_name}")
+            self.client.delete_collection(name=collection_name)
+            print(f"기존 컬렉션 삭제: {collection_name}")
         except:
-            self.collection = self.client.create_collection(
-                name=collection_name,
-                metadata={"description": "보험 약관 문서 벡터 저장소"}
-            )
-            print(f"📚 새 컬렉션 생성: {collection_name}")
+            pass
+        
+        # 새 컬렉션 생성 (BGE-M3 임베딩 함수 지정)
+        self.collection = self.client.create_collection(
+            name=collection_name,
+            embedding_function=self.embedding_function,
+            metadata={"description": "보험 약관 문서 벡터 저장소", "embedding_model": "BAAI/bge-m3"}
+        )
+        print(f"새 컬렉션 생성: {collection_name} (임베딩 모델: BGE-M3)")
     
     def load_processed_data(self, json_file: str) -> List[Dict]:
         """처리된 JSON 데이터 로드"""
-        print(f"📖 데이터 로드 중: {json_file}")
+        print(f"데이터 로드 중: {json_file}")
         
         try:
             with open(json_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
-            print(f"✅ {len(data)}페이지 데이터 로드 완료")
+            print(f"{len(data)}페이지 데이터 로드 완료")
             return data
             
         except Exception as e:
-            print(f"❌ 데이터 로드 오류: {str(e)}")
+            print(f"데이터 로드 오류: {str(e)}")
             return []
     
     def chunk_text(self, text: str, page: int, source: str) -> List[Dict]:
@@ -64,7 +70,7 @@ class VectorStore:
             chunk_size=300,  # 300 토큰으로 줄임
             chunk_overlap=100,  # 100 토큰 오버랩으로 늘림
             length_function=len,
-            separators=["\n\n", "\n", " ", ""]
+            separators=["\n\n", "\n", ".", " ", ""]
         )
         
         # 텍스트 분할
@@ -88,7 +94,7 @@ class VectorStore:
     
     def process_all_pages(self, pages_data: List[Dict]) -> List[Dict]:
         """모든 페이지를 청크로 분할"""
-        print("✂️ 텍스트 청킹 중...")
+        print("텍스트 청킹 중...")
         
         all_chunks = []
         for page_data in pages_data:
@@ -99,14 +105,14 @@ class VectorStore:
             )
             all_chunks.extend(page_chunks)
             
-            print(f"   ✅ 페이지 {page_data['page']}: {len(page_chunks)}개 청크")
+            print(f"   페이지 {page_data['page']}: {len(page_chunks)}개 청크")
         
-        print(f"✂️ 총 {len(all_chunks)}개 청크 생성 완료")
+        print(f"총 {len(all_chunks)}개 청크 생성 완료")
         return all_chunks
     
     def store_in_vector_db(self, chunks: List[Dict]):
         """청크들을 벡터 DB에 저장"""
-        print("💾 벡터 DB에 저장 중...")
+        print("벡터 DB에 저장 중...")
         
         try:
             # 기존 데이터 삭제 (새로 시작)
@@ -114,9 +120,10 @@ class VectorStore:
                 self.client.delete_collection(self.collection_name)
                 self.collection = self.client.create_collection(
                     name=self.collection_name,
-                    metadata={"description": "보험 약관 문서 벡터 저장소"}
+                    embedding_function=self.embedding_function,
+                    metadata={"description": "보험 약관 문서 벡터 저장소", "embedding_model": "BAAI/bge-m3"}
                 )
-                print("🗑️ 기존 데이터 삭제 완료")
+                print("기존 데이터 삭제 완료")
             except:
                 pass
             
@@ -137,12 +144,12 @@ class VectorStore:
                     ids=ids
                 )
                 
-                print(f"   ✅ 배치 {i//batch_size + 1} 저장 완료 ({len(batch)}개 청크)")
+                print(f"   배치 {i//batch_size + 1} 저장 완료 ({len(batch)}개 청크)")
             
-            print(f"💾 총 {len(chunks)}개 청크 저장 완료")
+            print(f"총 {len(chunks)}개 청크 저장 완료")
             
         except Exception as e:
-            print(f"❌ 벡터 DB 저장 오류: {str(e)}")
+            print(f"벡터 DB 저장 오류: {str(e)}")
     
     def search_similar(self, query: str, top_k: int = 5) -> List[Dict]:
         """유사한 문서 검색"""
@@ -164,33 +171,43 @@ class VectorStore:
             return search_results
             
         except Exception as e:
-            print(f"❌ 검색 오류: {str(e)}")
+            print(f"검색 오류: {str(e)}")
             return []
     
     def get_collection_info(self):
         """컬렉션 정보 조회"""
         try:
             count = self.collection.count()
-            print(f"📊 컬렉션 정보:")
+            print(f"컬렉션 정보:")
             print(f"   - 이름: {self.collection_name}")
             print(f"   - 총 문서 수: {count}")
             
             return count
             
         except Exception as e:
-            print(f"❌ 컬렉션 정보 조회 오류: {str(e)}")
+            print(f"컬렉션 정보 조회 오류: {str(e)}")
             return 0
 
 def main():
     """메인 프로그램"""
-    print("📘 벡터 저장소 구축 시스템")
+    print("벡터 저장소 구축 시스템")
     print("=" * 60)
     
-    # 1. 처리된 데이터 로드
-    json_file = "processed_data/약관_pages.json"
-    if not os.path.exists(json_file):
-        print(f"❌ 처리된 데이터 파일이 없습니다: {json_file}")
-        print("💡 먼저 pdf_preprocessor.py를 실행하세요.")
+    # 1. 처리된 데이터 로드 (통합 파일 우선, 개별 파일 대체)
+    json_files = [
+        "processed_data/all_pdfs_pages.json",  # 통합 파일 우선
+        "processed_data/약관_pages.json"        # 개별 파일 대체
+    ]
+    
+    json_file = None
+    for file_path in json_files:
+        if os.path.exists(file_path):
+            json_file = file_path
+            break
+    
+    if not json_file:
+        print(f"처리된 데이터 파일이 없습니다.")
+        print("먼저 pdf_preprocessor.py를 실행하세요.")
         return
     
     # 2. 벡터 저장소 초기화
@@ -212,9 +229,9 @@ def main():
     # 6. 저장소 정보 확인
     vector_manager.get_collection_info()
     
-    print(f"\n🎉 벡터 저장소 구축 완료!")
-    print(f"📁 저장 위치: ./chroma_db")
-    print(f"📚 컬렉션: {vector_manager.collection_name}")
+    print(f"\n벡터 저장소 구축 완료!")
+    print(f"저장 위치: ./chroma_db")
+    print(f"컬렉션: {vector_manager.collection_name}")
 
 if __name__ == "__main__":
     main()

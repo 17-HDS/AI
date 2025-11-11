@@ -16,3 +16,6 @@ langchain-openai
 langchain-community
 tiktoken
 streamlit
+# BGE-M3 임베딩 모델을 위한 패키지
+sentence-transformers
+torch

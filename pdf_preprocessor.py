@@ -342,23 +342,77 @@ class PDFPreprocessor:
         print(f"   - 총 문자수: {total_chars:,}")
         print(f"   - 평균 페이지당: {total_chars // len(pages_data):,}자")
 
-def main():
-    """메인 실행 함수"""
-    pdf_path = "source/약관.pdf"
+def process_all_pdfs_in_source():
+    """source 폴더의 모든 PDF 파일을 처리"""
+    import glob
     
-    if not os.path.exists(pdf_path):
-        print(f"PDF 파일을 찾을 수 없습니다: {pdf_path}")
+    print("source 폴더의 모든 PDF 파일 처리")
+    print("=" * 60)
+    
+    # source 폴더의 모든 PDF 파일 찾기
+    pdf_files = glob.glob("source/*.pdf")
+    
+    if not pdf_files:
+        print("source 폴더에 PDF 파일이 없습니다.")
         return
     
-    # PDF 처리
-    processor = PDFPreprocessor(pdf_path)
-    pages_data = processor.extract_text_and_tables()
+    print(f"발견된 PDF 파일: {len(pdf_files)}개")
+    for pdf_file in pdf_files:
+        print(f"   - {pdf_file}")
     
-    # 파일 저장
-    processor.save_to_files(pages_data)
+    # 모든 PDF 데이터를 저장할 리스트
+    all_pages_data = []
+    
+    # 각 PDF 파일 처리
+    for pdf_file in pdf_files:
+        print(f"\n처리 중: {pdf_file}")
+        
+        try:
+            # PDF 전처리기로 데이터 추출
+            processor = PDFPreprocessor(pdf_file)
+            pages_data = processor.extract_text_and_tables()
+            
+            if pages_data:
+                print(f"   {len(pages_data)}페이지 추출 완료")
+                all_pages_data.extend(pages_data)
+                
+                # 개별 파일 저장
+                processor.save_to_files(pages_data)
+            else:
+                print(f"   데이터 추출 실패")
+                
+        except Exception as e:
+            print(f"   처리 오류: {str(e)}")
+            continue
+    
+    if not all_pages_data:
+        print("처리된 데이터가 없습니다.")
+        return
+    
+    print(f"\n총 처리된 페이지: {len(all_pages_data)}개")
+    
+    # 통합된 데이터를 JSON 파일로 저장
+    output_file = "processed_data/all_pdfs_pages.json"
+    os.makedirs("processed_data", exist_ok=True)
+    
+    with open(output_file, 'w', encoding='utf-8') as f:
+        json.dump(all_pages_data, f, ensure_ascii=False, indent=2)
+    
+    print(f"통합 데이터 저장: {output_file}")
+    
+    # 통계 출력
+    total_chars = sum(len(page['text']) for page in all_pages_data)
+    print(f"\n통계:")
+    print(f"   - 총 페이지: {len(all_pages_data)}")
+    print(f"   - 총 문자수: {total_chars:,}")
+    print(f"   - 평균 페이지당: {total_chars // len(all_pages_data):,}자")
     
     print("\nPDF 전처리 완료!")
     print("다음 단계: python vector_store.py")
+
+def main():
+    """메인 실행 함수"""
+    process_all_pdfs_in_source()
 
 if __name__ == "__main__":
     main()

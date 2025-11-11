@@ -37,22 +37,9 @@ pip install -r requirements.txt
 
 ### 2. 환경 설정
 `.env` 파일 생성:
-```env
-# OpenAI API 키 (필수)
-OPENAI_API_KEY=sk-your-api-key-here
-
-# 사용할 GPT 모델 (선택사항, 기본값: gpt-4o-mini)
-# 추천 모델:
-# - gpt-4o-mini: 가장 경제적이고 빠름 (추천) ✨
-# - gpt-4o: 균형잡힌 성능과 비용
-# - gpt-4-turbo: 높은 품질, 높은 비용 (rate limit 주의)
-# - gpt-3.5-turbo: 빠르고 저렴함
-GPT_MODEL=gpt-4o-mini
 ```
-
-> ⚠️ **Rate Limit 오류 해결**: 
-> `rate_limit_exceeded` 오류가 발생하면 GPT_MODEL을 `gpt-4o-mini`로 변경하세요. 
-> 이 모델은 더 높은 토큰 제한과 저렴한 비용을 제공합니다.
+OPENAI_API_KEY=sk-your-api-key-here
+```
 
 ### 3. PDF 파일 준비
 `source/` 폴더에 `약관.pdf` 파일을 넣으세요.
@@ -126,47 +113,16 @@ python rag_chatbot.py
 ## ⚙️ 기술 스택
 
 - **PDF 처리**: PyMuPDF, pdfplumber
-- **텍스트 처리**: LangChain, tiktoken
+- **텍스트 처리**: LangChain
 - **임베딩**: OpenAI text-embedding-ada-002
 - **벡터 DB**: ChromaDB
-- **LLM**: GPT-4o-mini (기본값) / GPT-4 Turbo / GPT-3.5-turbo
+- **LLM**: GPT-4 Turbo
 - **웹 UI**: Streamlit
-
-## 💰 비용 최적화
-
-본 시스템은 다음과 같은 방법으로 비용을 최적화합니다:
-
-1. **토큰 제한**: 
-   - 컨텍스트 최대 6,000 토큰으로 제한
-   - 검색 결과 수를 3개로 제한
-   - 프롬프트 템플릿 간소화
-
-2. **경제적 모델 사용**:
-   - 기본 모델: `gpt-4o-mini` (가장 저렴하고 빠름)
-   - 필요시 `.env`에서 GPT_MODEL 변경 가능
-
-3. **스마트 청킹**:
-   - 300토큰 단위로 분할하여 효율적인 검색
 
 ## 🔍 문제 해결
 
 ### API 키 오류
 - `.env` 파일에 올바른 OpenAI API 키가 설정되어 있는지 확인
-
-### Rate Limit 오류 (429 Error)
-**증상**: `Error code: 429 - rate_limit_exceeded` 오류 발생
-
-**원인**: 
-- 토큰 사용량이 API 제한을 초과
-- `gpt-4-turbo-preview`의 경우 30,000 TPM 제한
-
-**해결 방법**:
-1. `.env` 파일에서 모델 변경:
-   ```env
-   GPT_MODEL=gpt-4o-mini
-   ```
-2. 더 경제적이고 높은 제한의 모델 사용
-3. 시스템이 자동으로 컨텍스트를 6,000 토큰으로 제한
 
 ### 벡터 저장소 오류
 - `python vector_store.py`를 먼저 실행하여 데이터를 구축
