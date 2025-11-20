@@ -46,14 +46,14 @@ st.set_page_config(
 st.markdown("""
 <style>
 .stApp {
-    background-color: #FFF7F0 !important;
+    background-color: #FFFFFF !important;
 }
 .main .block-container {
     padding-top: 0.5rem !important;
     padding-bottom: 0.5rem !important;
 }
 .chat-container {
-    height: calc(100vh - 200px);
+    height: calc(100vh - 700px);
     overflow-y: auto;
     padding: 0 1rem;
     display: flex;
@@ -86,13 +86,8 @@ st.markdown("""
     0% { opacity: 0; transform: translateY(8px); }
     100% { opacity: 1; transform: translateY(0); }
 }
-.source-box {
-    font-size: 14px;
-    color: #666;
-    margin-top: 4px;
-}
 .chat-container::-webkit-scrollbar {
-    width: 7px;
+    width: 5px;
 }
 .chat-container::-webkit-scrollbar-thumb {
     background: #FF7A00;
@@ -105,7 +100,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ------------------- 타이틀 -------------------
-st.title("📘 보험 약관 RAG 챗봇")
+st.title("📘 현대해상 보험 약관 챗봇")
 st.markdown("---")
 
 # ------------------- API Key 체크 -------------------
@@ -125,7 +120,14 @@ with st.sidebar:
     st.markdown("---")
     st.header("📖 사용법")
     st.markdown("질문하면 약관 기반으로 답변을 제공합니다.")
+    # ------------------- 시스템 정보 -------------------
+    if st.session_state.initialized:
+        st.metric("문서 수", st.session_state.chatbot.get_collection_info())
+        st.metric("대화 수", len(st.session_state.chat_history))
 
+    if st.button("🗑️ 채팅 초기화"):
+        st.session_state.chat_history = []
+        st.rerun()
 # ------------------- 메인 채팅 영역 -------------------
 chat_area = st.container()
 
@@ -135,13 +137,6 @@ with chat_area:
     for chat in st.session_state.chat_history:
         st.markdown(f"<div class='user-bubble'>{chat['query']}</div>", unsafe_allow_html=True)
         st.markdown(f"<div class='assistant-bubble'>{chat['answer']}</div>", unsafe_allow_html=True)
-
-        if chat.get("sources"):
-            sources_text = "<br>".join([
-                f"{s.get('title','')} (p{s.get('page','')})" if isinstance(s, dict) else str(s)
-                for s in chat["sources"]
-            ])
-            st.markdown(f"<div class='source-box'>📄 출처:<br>{sources_text}</div>", unsafe_allow_html=True)
 
     # 스크롤 자동 내려가기
     st.markdown("""
@@ -191,25 +186,5 @@ if st.session_state.initialized:
         st.session_state.chat_history[-1]["answer"] = full_answer
         st.session_state.chat_history[-1]["sources"] = final_sources
 
-        # 6) sources 출력 (안전하게 dict/str 모두 처리)
-        if final_sources:
-            sources_text = "<br>".join([
-                f"{s.get('title','')} (p{s.get('page','')})" if isinstance(s, dict) else str(s)
-                for s in final_sources
-            ])
-            st.markdown(f"<div class='source-box'>📄 출처:<br>{sources_text}</div>", unsafe_allow_html=True)
-
         # 7) 화면 갱신
-        st.rerun()
-
-# ------------------- 시스템 정보 -------------------
-col1, col2 = st.columns([2,1])
-with col2:
-    st.header("📊 시스템 정보")
-    if st.session_state.initialized:
-        st.metric("문서 수", st.session_state.chatbot.get_collection_info())
-        st.metric("대화 수", len(st.session_state.chat_history))
-
-    if st.button("🗑️ 채팅 초기화"):
-        st.session_state.chat_history = []
         st.rerun()
