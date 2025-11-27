@@ -1,217 +1,374 @@
 """
 📘 Step 2: 임베딩 및 Vector DB 저장 시스템 (개선 버전)
-- ID 중복 방지
-- ChromaDB 영구 저장 (persist)
-- 컬렉션 초기화 제어 가능
-- 검색 정확도 향상 (거리 정규화 적용)
+
+기능 요약
+- 약관 JSON(페이지 단위)을 로드하여 청크 단위로 분할
+- OpenAI Embeddings(text-embedding-3-large)로 임베딩 계산
+- ChromaDB PersistentClient에 벡터 + 메타데이터 저장
+- 쿼리 시 동일 임베딩 모델로 검색하여 상위 문서 반환
+
+주요 클래스
+- VectorStore: 로딩, 청크 분할, 벡터 저장, 검색 전부 담당
 """
 
-import json
 import os
-from typing import List, Dict, Any
+import json
+from typing import List, Dict, Any, Optional
+
 import chromadb
 from chromadb.config import Settings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
 from dotenv import load_dotenv
 
-# 환경변수 로드
+
+# .env 로딩 (OPENAI_API_KEY 등)
 load_dotenv()
 
 
 class VectorStore:
-    def __init__(self, collection_name: str = "insurance_terms"):
-        self.collection_name = collection_name
+    """
+    보험 약관용 Vector DB 래퍼 클래스.
 
-        # OpenAI API 키 확인
+    사용 순서 예시:
+        vs = VectorStore()
+        pages = vs.load_pages_from_json("processed_data/약관_pages.json")
+        chunks = vs.process_all_pages(pages)
+        vs.store_in_vector_db(chunks, reset=True)
+        results = vs.search_similar("계약 해지하면 환급금 얼마나 나와?")
+    """
+
+    def __init__(
+        self,
+        collection_name: str = "insurance_terms",
+        persist_dir: str = "./chroma_db",
+        embedding_model: str = "text-embedding-3-large",
+    ) -> None:
+        self.collection_name = collection_name
+        self.persist_dir = persist_dir
+
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
-            raise ValueError("❌ OPENAI_API_KEY 환경변수가 설정되지 않았습니다.")
+            raise ValueError("❌ OPENAI_API_KEY 가 설정되어 있지 않습니다 (.env 확인).")
 
-        # 임베딩 모델 초기화
-        self.embeddings = OpenAIEmbeddings(
-            model="text-embedding-3-large",
-            openai_api_key=api_key
+        # Chroma Persistent Client
+        self.client = chromadb.PersistentClient(
+            path=self.persist_dir,
+            settings=Settings(anonymized_telemetry=False),
         )
 
-        # ChromaDB 클라이언트 초기화 (Persistent)
-        self.client = chromadb.PersistentClient(
-            path="./chroma_db",
-            settings=Settings(anonymized_telemetry=False)
+        # LangChain OpenAI 임베딩 (직접 embeddings 인자로 넘길 예정)
+        self.embeddings = OpenAIEmbeddings(
+            model=embedding_model,
+            api_key=api_key,
         )
 
         # 컬렉션 생성 또는 로드
-        try:
-            self.collection = self.client.get_collection(name=collection_name)
-            print(f"📚 기존 컬렉션 로드: {collection_name}")
-        except Exception:
-            self.collection = self.client.create_collection(
-                name=collection_name,
-                metadata={"description": "보험 약관 문서 벡터 저장소"}
-            )
-            print(f"📚 새 컬렉션 생성: {collection_name}")
+        self.collection = self._get_or_create_collection()
+        print(f"✅ VectorStore 초기화 완료 (collection='{self.collection_name}')")
 
-    def load_processed_data(self, json_file: str) -> List[Dict]:
-        """처리된 JSON 데이터 로드"""
-        print(f"📖 데이터 로드 중: {json_file}")
+    # --------------------------------------------------------------------- #
+    # 내부 유틸
+    # --------------------------------------------------------------------- #
+
+    def _get_or_create_collection(self):
+        """
+        컬렉션이 존재하면 로드, 없으면 생성.
+        embedding_function 은 사용하지 않고, 항상 직접 embeddings 를 넘긴다.
+        """
         try:
-            with open(json_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            print(f"✅ {len(data)}페이지 데이터 로드 완료")
-            return data
-        except Exception as e:
-            print(f"❌ 데이터 로드 오류: {str(e)}")
+            collection = self.client.get_collection(self.collection_name)
+            print(f"📂 기존 컬렉션 로드: {self.collection_name}")
+            return collection
+        except Exception:
+            print(f"🆕 새 컬렉션 생성: {self.collection_name}")
+            return self.client.create_collection(
+                name=self.collection_name,
+                metadata={"description": "보험 약관 문서 벡터 저장소"},
+            )
+
+    @staticmethod
+    def _safe_basename(path: str) -> str:
+        """파일 경로에서 확장자 제거한 안전한 basename 리턴."""
+        base = os.path.basename(path)
+        return os.path.splitext(base)[0]
+
+    # --------------------------------------------------------------------- #
+    # 1) JSON 로딩
+    # --------------------------------------------------------------------- #
+
+    def load_pages_from_json(self, json_path: str) -> List[Dict[str, Any]]:
+        """
+        약관 JSON 파일을 로드한다.
+        구조 예시:
+            [
+              {"page": 1, "text": "...", "source": "약관.pdf"},
+              {"page": 2, "text": "...", "source": "약관.pdf"},
+              ...
+            ]
+        """
+        if not os.path.exists(json_path):
+            raise FileNotFoundError(f"❌ JSON 파일을 찾을 수 없습니다: {json_path}")
+
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        # 간단 검증
+        if not isinstance(data, list):
+            raise ValueError("❌ JSON 최상위 구조는 list 여야 합니다.")
+
+        print(f"📄 JSON 페이지 로드 완료: {len(data)} pages from '{json_path}'")
+        return data
+
+    # --------------------------------------------------------------------- #
+    # 2) 페이지 → 청크
+    # --------------------------------------------------------------------- #
+
+    def process_all_pages(
+        self,
+        pages: List[Dict[str, Any]],
+        chunk_size: int = 500,
+        chunk_overlap: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """
+        모든 페이지 텍스트를 청크로 나누고 메타데이터를 붙여 반환한다.
+
+        반환 형식:
+            [
+              {
+                "id": "약관_p1_c0",
+                "text": "청크 내용...",
+                "metadata": {
+                    "page": 1,
+                    "source": "약관.pdf",
+                    "chunk_id": 0,
+                    "total_chunks": 3,
+                }
+              },
+              ...
+            ]
+        """
+        if not pages:
+            print("⚠️ process_all_pages: 입력 페이지가 비어 있습니다.")
             return []
 
-    def chunk_text(self, text: str, page: int, source: str) -> List[Dict]:
-        """텍스트를 청크로 분할"""
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
-            length_function=len,
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
             separators=["\n\n", "\n", " ", ""],
         )
 
-        chunks = text_splitter.split_text(text)
-        chunk_data = []
-        for i, chunk in enumerate(chunks):
-            if chunk.strip():
-                chunk_data.append(
+        all_chunks: List[Dict[str, Any]] = []
+
+        for page_entry in pages:
+            page_num = page_entry.get("page")
+            text = (page_entry.get("text") or "").strip()
+            source = page_entry.get("source") or "unknown"
+
+            if not text:
+                continue
+
+            chunks = splitter.split_text(text)
+            total_chunks = len(chunks)
+            base = self._safe_basename(source)
+
+            for idx, chunk_text in enumerate(chunks):
+                chunk_id = f"{base}_p{page_num}_c{idx}"
+
+                metadata = {
+                    "page": page_num,
+                    "source": source,
+                    "chunk_id": idx,
+                    "total_chunks": total_chunks,
+                }
+
+                all_chunks.append(
                     {
-                        "content": chunk.strip(),
-                        "metadata": {
-                            "page": page,
-                            "source": source,
-                            "chunk_id": i,
-                            "total_chunks": len(chunks),
-                        },
+                        "id": chunk_id,
+                        "text": chunk_text,
+                        "metadata": metadata,
                     }
                 )
-        return chunk_data
 
-    def process_all_pages(self, pages_data: List[Dict]) -> List[Dict]:
-        """모든 페이지를 청크로 분할"""
-        print("✂️ 텍스트 청킹 중...")
-        all_chunks = []
-        for page_data in pages_data:
-            page_chunks = self.chunk_text(
-                page_data["text"], page_data["page"], page_data["source"]
-            )
-            all_chunks.extend(page_chunks)
-            print(f"   ✅ 페이지 {page_data['page']}: {len(page_chunks)}개 청크")
-        print(f"✂️ 총 {len(all_chunks)}개 청크 생성 완료")
+        print(f"✂️ 텍스트 청킹 완료: 총 {len(all_chunks)} chunks 생성")
         return all_chunks
 
-    def store_in_vector_db(self, chunks: List[Dict], reset: bool = True):
-        """청크들을 벡터 DB에 저장"""
-        print("💾 벡터 DB에 저장 중...")
+    # --------------------------------------------------------------------- #
+    # 3) Vector DB 저장
+    # --------------------------------------------------------------------- #
 
-        try:
-            # 필요 시 기존 데이터 삭제
-            if reset:
-                try:
-                    self.client.delete_collection(self.collection_name)
-                    self.collection = self.client.create_collection(
-                        name=self.collection_name,
-                        metadata={"description": "보험 약관 문서 벡터 저장소"},
-                    )
-                    print("🗑️ 기존 데이터 삭제 후 새 컬렉션 생성 완료")
-                except Exception as e:
-                    print(f"⚠️ 기존 컬렉션 삭제 실패 (무시됨): {e}")
+    def store_in_vector_db(
+        self,
+        chunks: List[Dict[str, Any]],
+        reset: bool = False,
+        batch_size: int = 50,
+    ) -> None:
+        """
+        청크 리스트를 임베딩 계산 후 ChromaDB 컬렉션에 저장한다.
 
-            # 청크를 배치 단위로 저장
-            batch_size = 50  # ✅ 안정성 향상
-            global_counter = 0
-            for i in range(0, len(chunks), batch_size):
-                batch = chunks[i : i + batch_size]
-                documents = [chunk["content"] for chunk in batch]
-                metadatas = [chunk["metadata"] for chunk in batch]
-                ids = [f"chunk_{global_counter + k}" for k in range(len(batch))]
-                global_counter += len(batch)
+        - reset=True 이면 기존 컬렉션을 삭제하고 새로 생성
+        - batch_size 단위로 나누어 embeddings + add 수행
+        """
+        if not chunks:
+            print("⚠️ 저장할 청크가 없습니다.")
+            return
 
+        # 필요하면 기존 데이터 삭제 후 컬렉션 재생성
+        if reset:
+            try:
+                self.client.delete_collection(self.collection_name)
+                print("🗑️ 기존 컬렉션 삭제 완료")
+            except Exception as e:
+                print(f"⚠️ 기존 컬렉션 삭제 실패 (무시함): {e}")
+            finally:
+                self.collection = self._get_or_create_collection()
+
+        total = len(chunks)
+        print(f"💾 벡터 저장 시작: 총 {total} chunks (batch_size={batch_size})")
+
+        for start in range(0, total, batch_size):
+            end = min(start + batch_size, total)
+            batch = chunks[start:end]
+
+            texts = [c["text"] for c in batch]
+            metadatas = [c["metadata"] for c in batch]
+            ids = [c["id"] for c in batch]
+
+            try:
+                # 1) 임베딩 계산
+                vectors = self.embeddings.embed_documents(texts)
+
+                # 2) 컬렉션에 저장
                 self.collection.add(
-                    documents=documents,
-                    metadatas=metadatas,
                     ids=ids,
-                )
-                print(f"   ✅ 배치 {i // batch_size + 1} 저장 완료 ({len(batch)}개 청크)")
-
-            print("💾 ChromaDB 영구 저장 완료")
-            print(f"💾 총 {len(chunks)}개 청크 저장 완료")
-
-        except Exception as e:
-            print(f"❌ 벡터 DB 저장 오류: {str(e)}")
-
-    def search_similar(self, query: str, top_k: int = 10) -> List[Dict]:
-        """유사한 문서 검색 (distance 정규화 포함)"""
-        try:
-            results = self.collection.query(query_texts=[query], n_results=top_k)
-            search_results = []
-            if not results or not results["documents"]:
-                print("⚠️ 검색 결과가 없습니다.")
-                return []
-
-            distances = results["distances"][0]
-            # ✅ 거리 → 유사도로 변환 (정규화)
-            max_d = max(distances)
-            min_d = min(distances)
-            norm_sim = [(max_d - d) / (max_d - min_d + 1e-9) for d in distances]
-
-            for i, doc in enumerate(results["documents"][0]):
-                search_results.append(
-                    {
-                        "content": doc,
-                        "metadata": results["metadatas"][0][i],
-                        "distance": distances[i],
-                        "similarity": round(norm_sim[i], 4),
-                    }
+                    documents=texts,
+                    metadatas=metadatas,
+                    embeddings=vectors,
                 )
 
-            return sorted(search_results, key=lambda x: x["similarity"], reverse=True)
+                print(f"  🔹 저장 완료: {start} ~ {end - 1} (누적 {end}/{total})")
+            except Exception as e:
+                print(f"❌ batch {start}~{end} 저장 중 오류: {e}")
 
-        except Exception as e:
-            print(f"❌ 검색 오류: {str(e)}")
+        print("✅ 모든 청크 벡터 저장 완료!")
+
+    # --------------------------------------------------------------------- #
+    # 4) 검색 (RAG에서 직접 사용)
+    # --------------------------------------------------------------------- #
+
+    def search_similar(
+        self,
+        query: str,
+        top_k: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """
+        쿼리 문장을 임베딩 후, 가장 유사한 청크 top_k개를 반환한다.
+
+        반환 형식:
+            [
+              {
+                "text": "...",
+                "page": 12,
+                "source": "약관.pdf",
+                "score": 0.87,  # 0~1 (1에 가까울수록 유사)
+                "metadata": {...}
+              },
+              ...
+            ]
+        """
+        if not query.strip():
             return []
 
-    def get_collection_info(self):
-        """컬렉션 정보 조회"""
-        try:
-            count = self.collection.count()
-            print("📊 컬렉션 정보:")
-            print(f"   - 이름: {self.collection_name}")
-            print(f"   - 총 문서 수: {count}")
-            return count
-        except Exception as e:
-            print(f"❌ 컬렉션 정보 조회 오류: {str(e)}")
-            return 0
+        # 쿼리 임베딩 계산
+        query_vec = self.embeddings.embed_query(query)
 
+        try:
+            results = self.collection.query(
+                query_embeddings=[query_vec],
+                n_results=top_k,
+                include=["documents", "metadatas", "distances"],
+            )
+        except Exception as e:
+            print(f"❌ search_similar 쿼리 오류: {e}")
+            return []
+
+        docs = results.get("documents", [[]])[0]
+        metas = results.get("metadatas", [[]])[0]
+        dists = results.get("distances", [[]])[0]
+
+        if not docs:
+            print("⚠️ 검색 결과가 없습니다.")
+            return []
+
+        # 거리(distance)를 0~1 사이의 점수(score)로 정규화 (작을수록 유사)
+        max_dist = max(dists) if dists else 1.0
+        if max_dist == 0:
+            max_dist = 1.0
+
+        scored_items = []
+        for doc, meta, dist in zip(docs, metas, dists):
+            score = 1.0 - (dist / max_dist)
+            scored_items.append(
+                {
+                    "text": doc,
+                    "page": meta.get("page"),
+                    "source": meta.get("source"),
+                    "score": float(score),
+                    "metadata": meta,
+                }
+            )
+
+        # score 기준 내림차순 정렬
+        scored_items.sort(key=lambda x: x["score"], reverse=True)
+        return scored_items
+
+    # --------------------------------------------------------------------- #
+    # 5) 디버그/정보 함수
+    # --------------------------------------------------------------------- #
+
+    def get_collection_info(self) -> int:
+        """
+        컬렉션에 저장된 문서(청크) 개수를 반환하고,
+        간단한 요약 로그를 출력한다.
+        """
+        info = self.collection.get()
+        num = len(info.get("ids", []))
+        print(f"📊 컬렉션 '{self.collection_name}' 문서 수: {num}")
+        return num
+
+
+# ------------------------------------------------------------------------- #
+#  단독 실행용 main (테스트 용도)
+# ------------------------------------------------------------------------- #
 
 def main():
-    """메인 프로그램"""
-    print("📘 벡터 저장소 구축 시스템")
-    print("=" * 60)
-
+    """
+    python vector_store.py 를 직접 실행했을 때:
+    - processed_data/약관_pages.json 을 읽어서
+    - 청크 생성 후
+    - 벡터 DB를 reset 하고 다시 빌드
+    """
     json_file = "processed_data/약관_pages.json"
-    if not os.path.exists(json_file):
-        print(f"❌ 처리된 데이터 파일이 없습니다: {json_file}")
-        print("💡 먼저 pdf_preprocessor.py를 실행하세요.")
-        return
 
-    vector_manager = VectorStore()
-    pages_data = vector_manager.load_processed_data(json_file)
-    if not pages_data:
-        return
+    vs = VectorStore(
+        collection_name="insurance_terms",
+        persist_dir="./chroma_db",
+        embedding_model="text-embedding-3-large",
+    )
 
-    chunks = vector_manager.process_all_pages(pages_data)
+    pages = vs.load_pages_from_json(json_file)
+    chunks = vs.process_all_pages(pages)
+
     if not chunks:
+        print("⚠️ 생성된 청크가 없어 벡터 저장을 중단합니다.")
         return
 
-    vector_manager.store_in_vector_db(chunks, reset=True)
-    vector_manager.get_collection_info()
+    vs.store_in_vector_db(chunks, reset=True)
+    vs.get_collection_info()
 
     print("\n🎉 벡터 저장소 구축 완료!")
-    print("📁 저장 위치: ./chroma_db")
-    print(f"📚 컬렉션: {vector_manager.collection_name}")
+    print(f"📁 저장 위치: {vs.persist_dir}")
+    print(f"📚 컬렉션: {vs.collection_name}")
 
 
 if __name__ == "__main__":
