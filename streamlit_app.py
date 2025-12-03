@@ -1,215 +1,230 @@
-"""
-📘 보험 약관 RAG 챗봇 - Streamlit 웹 인터페이스
-"""
-
 import streamlit as st
 import os
 import time
 from dotenv import load_dotenv
 from rag_chatbot import RAGChatbot
-import json
 
 # 환경변수 로드
 load_dotenv()
 
-def initialize_session_state():
-    """세션 상태 초기화"""
-    if 'chatbot' not in st.session_state:
-        st.session_state.chatbot = None
-    if 'chat_history' not in st.session_state:
-        st.session_state.chat_history = []
-    if 'initialized' not in st.session_state:
-        st.session_state.initialized = False
+# ------------------- 세션 초기화 -------------------
+if 'chatbot' not in st.session_state:
+    st.session_state.chatbot = None
+if 'chat_history' not in st.session_state:
+    st.session_state.chat_history = []
+if 'initialized' not in st.session_state:
+    st.session_state.initialized = False
 
+# ------------------- 챗봇 초기화 -------------------
 def initialize_chatbot():
-    """챗봇 초기화"""
+    if "logs" not in st.session_state:
+        st.session_state.logs = []  # ✅ 로그 저장 리스트
+
     try:
-        with st.spinner("🤖 RAG 챗봇을 초기화하는 중..."):
-            chatbot = RAGChatbot()
-            count = chatbot.get_collection_info()
-            
-            if count == 0:
-                st.error("❌ 벡터 저장소가 비어있습니다. 먼저 데이터를 구축하세요.")
-                return None
-            
-            st.session_state.chatbot = chatbot
-            st.session_state.initialized = True
-            st.success(f"✅ 챗봇 초기화 완료! (총 {count}개 문서)")
-            
+        chatbot = RAGChatbot()
+        count = chatbot.get_collection_info()
+
+        if count == 0:
+            st.session_state.initialized = False
+            msg = "❌ 벡터 저장소가 비어있습니다. 먼저 데이터를 구축하세요."
+            st.session_state.logs.append(msg)
+            return None
+
+        st.session_state.chatbot = chatbot
+        st.session_state.initialized = True
+        msg = f"✅ 챗봇 초기화 완료! (총 {count}개 문서)"
+        st.session_state.logs.append(msg)
+
     except Exception as e:
-        st.error(f"❌ 챗봇 초기화 오류: {str(e)}")
+        st.session_state.initialized = False
+        msg = f"❌ 챗봇 초기화 오류: {str(e)}"
+        st.session_state.logs.append(msg)
         return None
 
-def main():
-    st.set_page_config(
-        page_title="보험 약관 RAG 챗봇",
-        page_icon="📘",
-        layout="wide"
-    )
-    
-    # 세션 상태 초기화
-    initialize_session_state()
-    
-    # 헤더
-    st.title("📘 보험 약관 RAG 챗봇")
-    st.markdown("---")
-    
-    # 사이드바
-    with st.sidebar:
-        st.header("⚙️ 설정")
-        
-        # API 키 확인
-        if not os.getenv('OPENAI_API_KEY'):
-            st.error("❌ OpenAI API 키가 설정되지 않았습니다.")
-            st.info("💡 .env 파일에 OPENAI_API_KEY를 설정하세요.")
-            return
-        
-        # 초기화 버튼
-        if st.button("🚀 챗봇 초기화", type="primary"):
-            initialize_chatbot()
-        
-        # 상태 표시
-        if st.session_state.initialized:
-            st.success("✅ 챗봇 준비 완료")
-        else:
-            st.warning("⚠️ 챗봇 초기화 필요")
-        
-        st.markdown("---")
-        
-        # 사용법
-        st.header("📖 사용법")
-        st.markdown("""
-        1. **초기화**: 챗봇 초기화 버튼 클릭
-        2. **질문**: 아래 입력창에 질문 입력
-        3. **답변**: AI가 약관을 바탕으로 답변
-        4. **출처**: 답변에 페이지 번호 표시
-        """)
-        
-        # 예시 질문
-        st.header("💡 예시 질문")
-        example_questions = [
-            "보험금 지급 사유는 무엇인가요?",
-            "보험료는 어떻게 납입하나요?",
-            "면책 사항이 있나요?",
-            "보험 기간은 얼마나 되나요?",
-            "해지 시 환급금은 어떻게 되나요?"
-        ]
-        
-        for question in example_questions:
-            if st.button(question, key=f"example_{question}"):
-                st.session_state.user_input = question
-    
-    # 메인 채팅 영역
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.header("💬 채팅")
-        
-        # 채팅 히스토리 표시
-        for i, chat in enumerate(st.session_state.chat_history):
-            with st.chat_message("user"):
-                st.write(chat["query"])
-            
-            with st.chat_message("assistant"):
-                st.write(chat["answer"])
-                
-                # 출처 정보
-                if chat["sources"]:
-                    with st.expander(f"📚 참고 문서 ({len(chat['sources'])}개)"):
-                        for j, source in enumerate(chat["sources"], 1):
-                            st.write(f"**문서 {j}** (페이지 {source['page']})")
-                            st.write(source["content"])
-                            st.write("---")
-        
-        # 사용자 입력
-        if st.session_state.initialized:
-            user_input = st.chat_input("보험 약관에 대해 질문하세요...")
-            
-            if user_input:
-                # 사용자 메시지 표시
-                with st.chat_message("user"):
-                    st.write(user_input)
-                
-                # AI 답변 생성 (스트리밍)
-                with st.chat_message("assistant"):
-                    # 스트리밍 응답을 위한 컨테이너
-                    message_placeholder = st.empty()
-                    sources_placeholder = st.empty()
-                    
-                    # 초기 로딩 메시지
-                    message_placeholder.markdown("🤔 답변을 생성하는 중...")
-                    
-                    # 스트리밍 응답 생성
-                    full_answer = ""
-                    final_sources = []
-                    streaming_started = False
-                    
-                    for chunk in st.session_state.chatbot.chat_streaming(user_input):
-                        if not chunk["done"]:
-                            # 스트리밍 시작
-                            if not streaming_started:
-                                streaming_started = True
-                                message_placeholder.empty()  # 로딩 메시지 제거
-                            
-                            # 실시간으로 답변 업데이트 (타이핑 효과)
-                            full_answer = chunk["answer"]
-                            message_placeholder.markdown(full_answer + "▌")
-                            time.sleep(0.01)  # 부드러운 스트리밍을 위한 짧은 지연
-                        else:
-                            # 최종 완성된 응답
-                            full_answer = chunk["answer"]
-                            final_sources = chunk["sources"]
-                            message_placeholder.markdown(full_answer)
-                    
-                    # 출처 정보 표시
-                    if final_sources:
-                        with sources_placeholder.expander(f"📚 참고 문서 ({len(final_sources)}개)"):
-                            for i, source in enumerate(final_sources, 1):
-                                st.write(f"**문서 {i}** (페이지 {source['page']})")
-                                st.write(source["content"])
-                                st.write("---")
-                
-                # 채팅 히스토리에 추가
-                st.session_state.chat_history.append({
-                    "query": user_input,
-                    "answer": full_answer,
-                    "sources": final_sources
-                })
-        else:
-            st.info("👆 먼저 사이드바에서 챗봇을 초기화하세요.")
-    
-    with col2:
-        st.header("📊 시스템 정보")
-        
-        if st.session_state.initialized:
-            # 저장소 정보
-            st.subheader("📚 벡터 저장소")
-            count = st.session_state.chatbot.get_collection_info()
-            st.metric("총 문서 수", count)
-            
-            # 처리된 데이터 정보
-            if os.path.exists("processed_data/약관_processed.json"):
-                with open("processed_data/약관_processed.json", 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                
-                st.subheader("📄 처리된 PDF")
-                st.metric("총 페이지", len(data))
-                
-                total_tables = sum(page.get("tables_count", 0) for page in data)
-                st.metric("총 표", total_tables)
-            
-            # 채팅 통계
-            st.subheader("💬 채팅 통계")
-            st.metric("총 대화 수", len(st.session_state.chat_history))
-            
-        else:
-            st.info("챗봇을 초기화하면 시스템 정보가 표시됩니다.")
-        
-        # 초기화 버튼
-        if st.button("🗑️ 채팅 기록 삭제"):
-            st.session_state.chat_history = []
-            st.rerun()
+# ------------------- 페이지 설정 -------------------
+st.set_page_config(
+    page_title="현대해상 보험 약관 챗봇",
+    page_icon="📘",
+    layout="wide"
+)
 
-if __name__ == "__main__":
-    main()
+# ------------------- CSS -------------------
+st.markdown("""
+<style>
+.stApp {
+    background-color: #FFFFFF !important;
+}
+.main .block-container {
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+}
+.chat-container {
+    height: calc(100vh - 800px);
+    overflow-y: auto;
+    padding: 0 1rem;
+    display: flex;
+    flex-direction: column;
+    margin-top: 0 !important;
+}
+.user-bubble, .assistant-bubble {
+    padding: 12px 18px;
+    margin: 8px 0;
+    border-radius: 16px;
+}
+.user-bubble {
+    max-width: 80%;
+    align-self: flex-end;
+    background: linear-gradient(135deg, #FFA94D, #FF7A00);
+    color: white;
+    margin-left: auto;
+    box-shadow: 3px 3px 10px rgba(0,0,0,0.1),
+                -2px -2px 8px rgba(255,255,255,0.7);
+}
+.assistant-bubble {
+    max-width: 80%;
+    align-self: flex-start;
+    background: rgba(255, 255, 255, 0.8);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid rgba(230, 180, 120, 0.5);
+    box-shadow: 4px 4px 12px rgba(0,0,0,0.08),
+                -3px -3px 10px rgba(255,255,255,0.9);
+}
+@keyframes fadeInUp {
+    0% { opacity: 0; transform: translateY(8px); }
+    100% { opacity: 1; transform: translateY(0); }
+}
+.chat-container::-webkit-scrollbar {
+    width: 5px;
+}
+.chat-container::-webkit-scrollbar-thumb {
+    background: #FF7A00;
+    border-radius: 4px;
+}
+.chat-container::-webkit-scrollbar-thumb:hover {
+    background: #FF9400;
+}
+.system-guide {
+    color: #222;
+    max-width: 90%;
+    margin-right: auto;
+    padding: 12px 16px;
+    border-radius: 12px;
+    line-height: 1.8;
+    font-size: 16px;
+    opacity: 0.8;
+}
+.stMainBlockContainer {
+    padding-top: 40px;
+}
+.st-emotion-cache-tn0cau{
+    gap: 0;
+}
+.st-emotion-cache-1y34ygi{
+    padding-bottom:1em;
+}
+</style>
+""", unsafe_allow_html=True)
 
+# ------------------- 타이틀 -------------------
+st.title("📘 현대해상 보험 약관 챗봇")
+st.markdown("---")
+
+# ------------------- API Key 체크 -------------------
+if not os.getenv('OPENAI_API_KEY'):
+    st.error("❌ OpenAI API 키가 설정되지 않았습니다.")
+elif not st.session_state.initialized:
+    initialize_chatbot()
+
+# ------------------- 사이드바 -------------------
+with st.sidebar:
+    st.header("📖 사용법")
+    st.markdown("질문하면 약관 기반으로 답변을 제공합니다.")
+    with st.expander("📌 시스템 로그 보기"):
+        if "logs" in st.session_state and st.session_state.logs:
+            for log in reversed(st.session_state.logs):
+                st.write(f"- {log}")
+        else:
+            st.write("⚠️ 아직 로그가 없습니다.")
+    # ------------------- 시스템 정보 -------------------
+    if st.session_state.initialized:
+        st.metric("질문 수", len(st.session_state.chat_history))
+
+    if st.button("🗑️ 채팅 초기화"):
+        st.session_state.chat_history = []
+        st.rerun()
+# ------------------- 메인 채팅 영역 -------------------
+chat_area = st.container()
+
+with chat_area:
+    st.markdown("<div class='chat-container'>", unsafe_allow_html=True)
+
+    for chat in st.session_state.chat_history:
+        st.markdown(f"<div class='user-bubble'>{chat['query']}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='assistant-bubble'>{chat['answer']}</div>", unsafe_allow_html=True)
+
+    # 스크롤 자동 내려가기
+    st.markdown("""
+        <script>
+        const chatContainer = window.parent.document.querySelector('.chat-container');
+        if(chatContainer){
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+        </script>
+    """, unsafe_allow_html=True)
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+# ------------------- 입력창 + 스트리밍 -------------------
+if st.session_state.initialized:
+    user_input = st.chat_input("질문을 입력하세요...")
+    
+    if user_input:
+        # 1) chat_history에 먼저 추가
+        st.session_state.chat_history.append({
+            "query": user_input,
+            "answer": "",
+            "sources": []
+        })
+
+        # 2) 화면에 질문 말풍선 바로 렌더
+        with chat_area:
+            st.markdown(f"<div class='user-bubble'>{user_input}</div>", unsafe_allow_html=True)
+
+        # 3) 답변 placeholder 생성
+        message_placeholder = st.empty()
+        full_answer = ""
+        final_sources = []
+
+        # 4) 스트리밍
+        for chunk in st.session_state.chatbot.chat_streaming(user_input):
+            if not chunk["done"]:
+                full_answer = chunk["answer"]
+                message_placeholder.markdown(f"<div class='assistant-bubble'>{full_answer} ▌</div>", unsafe_allow_html=True)
+                time.sleep(0.01)
+            else:
+                full_answer = chunk["answer"]
+                final_sources = chunk.get("sources", [])
+                message_placeholder.markdown(f"<div class='assistant-bubble'>{full_answer}</div>", unsafe_allow_html=True)
+
+        # 5) 최종 답변, 출처 chat_history에 저장
+        st.session_state.chat_history[-1]["answer"] = full_answer
+        st.session_state.chat_history[-1]["sources"] = final_sources
+
+        # 7) 화면 갱신
+        st.rerun()
+        
+    # 채팅 기록 없을 때 안내 메시지 노출
+    else:
+        if len(st.session_state.chat_history) == 0:
+            st.markdown("""
+                <div class='assistant-bubble system-guide'>
+                    👋 환영합니다!<br><br>
+                    아래에 질문을 입력하면 약관 기반으로 답변을 드립니다.<br><br>
+                    ✅ 예시 질문:<br>
+                    • 자동차 보험 자기부담금은 뭐예요?<br>
+                    • 암 진단비 지급 조건 알려줘<br>
+                    • 보험 해지 환급금 계산 방법은?<br><br>
+                    ✍️ 아래 입력창에 질문을 입력해주세요!
+                </div>
+            """, unsafe_allow_html=True)
